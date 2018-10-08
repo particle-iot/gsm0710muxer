@@ -685,7 +685,7 @@ inline int Muxer<StreamT, MutexT>::processTimeouts() {
         }
     }
 
-    if (initiator_ && keepAlivePeriod_ && !stopping_ && ctrl_.state != ControlCommand::State::Pending &&
+    if (initiator_ && getChannel(0)->state == ChannelState::Opened && keepAlivePeriod_ && !stopping_ && ctrl_.state != ControlCommand::State::Pending &&
             (portable::getMillis() - lastKeepAlive_) >= keepAlivePeriod_) {
         controlSend(proto::TEST, (const uint8_t*)"abc", 3);
         lastKeepAlive_ = portable::getMillis();
