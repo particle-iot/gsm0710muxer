@@ -73,7 +73,7 @@ public:
     int suspendChannel(uint8_t channel);
     int resumeChannel(uint8_t channel);
 
-    int writeChannel(uint8_t channel, const uint8_t* data, size_t size);
+    int writeChannel(uint8_t channel, const uint8_t* data, size_t size, unsigned int timeout = 0);
 
     enum class ChannelState {
         Closed,
@@ -116,7 +116,7 @@ private:
         ChannelDataHandler handler;
         void* handlerCtx;
         uint8_t localModemState;
-        uint8_t remoteModemState;
+        volatile uint8_t remoteModemState;
         uint8_t convergence;
 
         uint64_t timestamp;
@@ -174,6 +174,7 @@ private:
 
     Channel* getChannel(uint8_t channel);
     int waitChannelState(Channel* chan, ChannelState state);
+    int waitWritable(Channel* c, unsigned int timeout);
     int closeChannelImpl(uint8_t channel);
 
     int sendChannel(uint8_t channel, uint8_t control, bool cmd, const uint8_t* data, size_t len);

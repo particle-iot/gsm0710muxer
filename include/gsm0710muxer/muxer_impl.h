@@ -361,20 +361,37 @@ inline int Muxer<StreamT, MutexT>::resumeChannel(uint8_t channel) {
 }
 
 template<typename StreamT, typename MutexT>
-inline int Muxer<StreamT, MutexT>::writeChannel(uint8_t channel, const uint8_t* data, size_t size) {
+inline int Muxer<StreamT, MutexT>::writeChannel(uint8_t channel, const uint8_t* data, size_t size, unsigned int timeout) {
     CHECK_TRUE(!isStopping(), GSM0710_ERROR_INVALID_STATE);
     auto c = getChannel(channel);
     CHECK_TRUE(c, GSM0710_ERROR_INVALID_ARGUMENT);
     CHECK_TRUE(c->state == ChannelState::Opened, GSM0710_ERROR_INVALID_STATE);
     GSM0710_LOG_DEBUG(TRACE, "Writing %u bytes into mux channel %u", size, channel);
     {
-        std::lock_guard<MutexT> lk(mutex_);
-        if (!(c->remoteModemState & (proto::RTR))) {
-            GSM0710_LOG_DEBUG(WARN, "Remote end not ready to receive data on mux channel %u", channel);
-            return GSM0710_ERROR_FLOW_CONTROL;
-        }
+        CHECK(waitWritable(c, timeout));
     }
     return sendChannel(channel, proto::UIH, false, data, size);
+}
+
+template<typename StreamT, typename MutexT>
+inline int Muxer<StreamT, MutexT>::waitWritable(Channel* chan, unsigned int timeout) {
+    if ((chan->remoteModemState & (proto::RTR))) {
+        return 0;
+    } else if (timeout > 0) {
+        auto t1 = portable::getMillis();
+        while ((portable::getMillis() - t1) < timeout && isRunning() &&
+                chan->state != ChannelState::Error && chan->state != ChannelState::Closed) {
+            int toWait = timeout - (portable::getMillis() - t1);
+            if (toWait > 0) {
+                xEventGroupWaitBits(channelEvents_, EVENT_STATE_CHANGED << chan->channel, pdTRUE, pdFALSE, toWait / portTICK_RATE_MS);
+                if (chan->remoteModemState & proto::RTR) {
+                    return 0;
+                }
+            }
+        }
+        GSM0710_LOG_DEBUG(ERROR, "Channel %u is still not writable after waiting for %u ms", c->channel, timeout);
+    }
+    return GSM0710_ERROR_FLOW_CONTROL;
 }
 
 template<typename StreamT, typename MutexT>
@@ -952,6 +969,7 @@ inline int Muxer<StreamT, MutexT>::processModemState(const uint8_t* data, size_t
     if (c && l >= 1) {
         GSM0710_LOG_DEBUG(INFO, "Updating channel %u remote modem state. Old = %02x, new = %02x", channel, c->remoteModemState, v24);
         c->remoteModemState = v24;
+        xEventGroupSetBits(channelEvents_, EVENT_STATE_CHANGED << channel);
     }
 
     controlReply(proto::MSC, data, length);
@@ -1024,21 +1042,34 @@ inline int Muxer<StreamT, MutexT>::sendChannel(uint8_t channel, uint8_t control,
     // }
     // LOG_DUMP(TRACE, footer, sizeof(footer));
 
+    auto t1 = portable::getMillis();
+
     size_t sent = 0;
     while (sent < hlen) {
         sent += CHECK(stream_->write((const char*)header + sent, hlen - sent));
+        if ((portable::getMillis() - t1) > getControlResponseTimeout() * 2) {
+            return GSM0710_ERROR_FLOW_CONTROL;
+        }
     }
 
+    t1 = portable::getMillis();
     if (len) {
         sent = 0;
         while (sent < len) {
             sent += CHECK(stream_->write((const char*)data + sent, len - sent));
+            if ((portable::getMillis() - t1) > getControlResponseTimeout() * 2) {
+                return GSM0710_ERROR_FLOW_CONTROL;
+            }
         }
     }
 
     sent = 0;
+    t1 = portable::getMillis();
     while (sent < sizeof(footer)) {
         sent += CHECK(stream_->write((const char*)footer + sent, sizeof(footer) - sent));
+        if ((portable::getMillis() - t1) > getControlResponseTimeout() * 2) {
+            return GSM0710_ERROR_FLOW_CONTROL;
+        }
     }
 
     return 0;
