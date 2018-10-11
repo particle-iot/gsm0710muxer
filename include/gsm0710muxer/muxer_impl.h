@@ -1195,9 +1195,9 @@ inline void Muxer<StreamT, MutexT>::transition(State state) {
 
 template<typename StreamT, typename MutexT>
 inline int Muxer<StreamT, MutexT>::channelTransition(Channel* channel, ChannelState state) {
-    if (!initiator_ && channel->channel != 0 && channelHandler_) {
+    if (channelHandler_) {
         int r = channelHandler_(channel->channel, channel->state, state, channelHandlerCtx_);
-        if (r) {
+        if (!initiator_ && channel->channel != 0 && r) {
             GSM0710_LOG_DEBUG(TRACE, "Channel %u state change from %s to %s denied by channel handler",
                     channel->channel, channel->stateName(channel->state), channel->stateName(state));
             return r;
