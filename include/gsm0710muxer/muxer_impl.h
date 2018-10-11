@@ -218,6 +218,11 @@ inline void Muxer<StreamT, MutexT>::setKeepAliveMaxMissed(unsigned int m) {
 }
 
 template<typename StreamT, typename MutexT>
+inline void Muxer<StreamT, MutexT>::useMscAsKeepAlive(bool val) {
+    useMscKeepAlive_ = val;
+}
+
+template<typename StreamT, typename MutexT>
 inline unsigned int Muxer<StreamT, MutexT>::getAckTimeout() {
     return ackTimeout_;
 }
@@ -389,7 +394,7 @@ inline int Muxer<StreamT, MutexT>::waitWritable(Channel* chan, unsigned int time
                 }
             }
         }
-        GSM0710_LOG_DEBUG(ERROR, "Channel %u is still not writable after waiting for %u ms", c->channel, timeout);
+        GSM0710_LOG_DEBUG(ERROR, "Channel %u is still not writable after waiting for %u ms", chan->channel, timeout);
     }
     return GSM0710_ERROR_FLOW_CONTROL;
 }
@@ -704,7 +709,11 @@ inline int Muxer<StreamT, MutexT>::processTimeouts() {
 
     if (initiator_ && getChannel(0)->state == ChannelState::Opened && keepAlivePeriod_ && !stopping_ && ctrl_.state != ControlCommand::State::Pending &&
             (portable::getMillis() - lastKeepAlive_) >= keepAlivePeriod_) {
-        controlSend(proto::TEST, (const uint8_t*)"abc", 3);
+        if (!useMscKeepAlive_) {
+            controlSend(proto::TEST, (const uint8_t*)"abc", 3);
+        } else {
+            modemStatusSend(getChannel(1));
+        }
         lastKeepAlive_ = portable::getMillis();
     }
 
@@ -942,7 +951,8 @@ inline int Muxer<StreamT, MutexT>::controlFinished() {
     if (ctrl_.command == (proto::CLD | proto::CR) && stopping_) {
         LOG(INFO, "Received response to CLD or timed out, exiting multiplexed mode");
         forceClose();
-    } else if (ctrl_.command == (proto::TEST | proto::CR)) {
+    } else if ((ctrl_.command == (proto::TEST | proto::CR)) ||
+            (useMscKeepAlive_ && ctrl_.command == (proto::MSC | proto::CR) && (ctrl_.data[2] >> 2) == 1)) {
         if (ctrl_.state != ControlCommand::State::Timeout) {
             keepAlivesMissed_ = 0;
         } else {

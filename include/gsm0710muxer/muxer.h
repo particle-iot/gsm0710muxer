@@ -57,6 +57,7 @@ public:
     void setMaxRetransmissions(unsigned int n2);
     void setKeepAlivePeriod(unsigned int p);
     void setKeepAliveMaxMissed(unsigned int m);
+    void useMscAsKeepAlive(bool val);
 
     unsigned int getAckTimeout();
     unsigned int getControlResponseTimeout();
@@ -231,6 +232,7 @@ private:
     unsigned int maxFrameSize_ = proto::DEFAULT_N1;
     unsigned int maxRetransmissions_ = proto::DEFAULT_N2;
     unsigned int keepAlivePeriod_ = 0;
+    bool useMscKeepAlive_ = false;
 
     uint64_t lastKeepAlive_ = 0;
     unsigned int keepAliveMaxMissed_ = 0;
