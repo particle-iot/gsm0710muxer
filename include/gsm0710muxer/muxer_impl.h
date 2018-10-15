@@ -144,7 +144,7 @@ inline int Muxer<StreamT, MutexT>::start(bool initiator) {
                     auto self = (Muxer<StreamT, MutexT>*)arg;
                     self->run();
                     vTaskDelete(nullptr);
-                }, "gsm0710", portable::taskStackSize, this, portable::taskPriority, &thread_)) {
+                }, "gsm0710", portable::taskStackSize / sizeof(portSTACK_TYPE), this, portable::taskPriority, &thread_)) {
             transition(State::Error);
             return GSM0710_ERROR_UNKNOWN;
         }
