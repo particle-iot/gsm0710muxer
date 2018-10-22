@@ -415,6 +415,10 @@ inline int Muxer<StreamT, MutexT>::run() {
     while (state_ != State::Stopped && state_ != State::Error) {
         auto nextTimeout = processTimeouts();
 
+#ifdef GSM0710_PUMP_INPUT_DATA
+        nextTimeout = std::min(nextTimeout, GSM0710_PUMP_INPUT_DATA);
+#endif
+
         auto ev = xEventGroupWaitBits(events_, EVENT_INPUT_DATA | EVENT_STOP | EVENT_WAKEUP, pdTRUE,
                 pdFALSE, nextTimeout / portTICK_RATE_MS);
 
