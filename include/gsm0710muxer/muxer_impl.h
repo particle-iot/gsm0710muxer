@@ -166,9 +166,7 @@ inline int Muxer<StreamT, MutexT>::stop() {
     LOG(INFO, "Stopping GSM07.10 muxer");
 
     xEventGroupSetBits(events_, EVENT_STOP);
-    if (state_ != State::Stopped) {
-        xEventGroupWaitBits(events_, EVENT_STOPPED, pdTRUE, pdFALSE, portMAX_DELAY);
-    }
+    xEventGroupWaitBits(events_, EVENT_STOPPED, pdTRUE, pdFALSE, portMAX_DELAY);
 
     thread_ = nullptr;
 
