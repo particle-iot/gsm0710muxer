@@ -91,9 +91,7 @@ inline int Muxer<StreamT, MutexT>::notifyInput(size_t size) {
 
 template<typename StreamT, typename MutexT>
 inline int Muxer<StreamT, MutexT>::start(bool initiator) {
-    if (isRunning()) {
-        stop();
-    }
+    stop();
 
     LOG(INFO, "Starting GSM07.10 muxer");
 
@@ -158,13 +156,15 @@ inline int Muxer<StreamT, MutexT>::start(bool initiator) {
 
 template<typename StreamT, typename MutexT>
 inline int Muxer<StreamT, MutexT>::stop() {
-    if (!isRunning()) {
+    if (!isRunning() && !thread_) {
         return GSM0710_ERROR_NONE;
     }
 
     LOG(INFO, "Stopping GSM07.10 muxer");
 
-    xEventGroupSetBits(events_, EVENT_STOP);
+    if (isRunning()) {
+        xEventGroupSetBits(events_, EVENT_STOP);
+    }
     xEventGroupWaitBits(events_, EVENT_STOPPED, pdTRUE, pdFALSE, portMAX_DELAY);
 
     thread_ = nullptr;
