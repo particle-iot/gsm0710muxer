@@ -411,6 +411,10 @@ inline int Muxer<StreamT, MutexT>::run() {
 
     while (state_ != State::Stopped && state_ != State::Error) {
         auto nextTimeout = processTimeouts();
+        if (nextTimeout < 0) {
+            transition(State::Error);
+            break;
+        }
 
 #ifdef GSM0710_PUMP_INPUT_DATA
         nextTimeout = std::min(nextTimeout, GSM0710_PUMP_INPUT_DATA);
@@ -426,6 +430,10 @@ inline int Muxer<StreamT, MutexT>::run() {
         if (ev & EVENT_WAKEUP) {
             GSM0710_LOG_DEBUG(TRACE, "Woken up");
             nextTimeout = processTimeouts();
+            if (nextTimeout < 0) {
+                transition(State::Error);
+                break;
+            }
         }
 
 #if !defined(GSM0710_PUMP_INPUT_DATA)
@@ -433,7 +441,10 @@ inline int Muxer<StreamT, MutexT>::run() {
 #else
         {
 #endif // !defined(GSM0710_PUMP_INPUT_DATA)
-            processInputData();
+            if (processInputData() < 0) {
+                transition(State::Error);
+                break;
+            }
         }
     }
 
@@ -666,7 +677,7 @@ inline int Muxer<StreamT, MutexT>::processTimeouts() {
             if (ctrl_.retries++ < getMaxRetransmissions()) {
                 GSM0710_LOG_DEBUG(TRACE, "(%d/%d) Retrying control command: %02x, len = %u",
                         ctrl_.retries, getMaxRetransmissions(), ctrl_.command, ctrl_.len);
-                sendChannel(0, proto::UIH, true, ctrl_.data, ctrl_.len);
+                CHECK(sendChannel(0, proto::UIH, true, ctrl_.data, ctrl_.len));
                 ctrl_.timestamp = portable::getMillis();
             } else {
                 ctrl_.state = ControlCommand::State::Timeout;
@@ -684,11 +695,11 @@ inline int Muxer<StreamT, MutexT>::processTimeouts() {
                     if (chan->state == ChannelState::Closing) {
                         GSM0710_LOG_DEBUG(TRACE, "(%d/%d) Trying to close channel %u",
                                 chan->retries, getMaxRetransmissions(), chan->channel);
-                        commandSend(c, proto::DISC | proto::PF);
+                        CHECK(commandSend(c, proto::DISC | proto::PF));
                     } else {
                         GSM0710_LOG_DEBUG(TRACE, "(%d/%d) Trying to open channel %u",
                                 chan->retries, getMaxRetransmissions(), chan->channel);
-                        commandSend(c, proto::SABM | proto::PF);
+                        CHECK(commandSend(c, proto::SABM | proto::PF));
                     }
                     chan->timestamp = portable::getMillis();
                 } else {
@@ -703,7 +714,7 @@ inline int Muxer<StreamT, MutexT>::processTimeouts() {
         } else if (c > 0 && chan->update == true && chan->state == ChannelState::Opened) {
             if (ctrl_.state != ControlCommand::State::Pending) {
                 chan->update = false;
-                modemStatusSend(chan);
+                CHECK(modemStatusSend(chan));
             }
         }
     }
@@ -711,9 +722,9 @@ inline int Muxer<StreamT, MutexT>::processTimeouts() {
     if (initiator_ && getChannel(0)->state == ChannelState::Opened && keepAlivePeriod_ && !stopping_ && ctrl_.state != ControlCommand::State::Pending &&
             (portable::getMillis() - lastKeepAlive_) >= keepAlivePeriod_) {
         if (!useMscKeepAlive_) {
-            controlSend(proto::TEST, (const uint8_t*)"abc", 3);
+            CHECK(controlSend(proto::TEST, (const uint8_t*)"abc", 3));
         } else {
-            modemStatusSend(getChannel(1));
+            CHECK(modemStatusSend(getChannel(1)));
         }
         lastKeepAlive_ = portable::getMillis();
     }
