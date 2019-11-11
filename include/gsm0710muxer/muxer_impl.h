@@ -450,6 +450,11 @@ inline int Muxer<StreamT, MutexT>::run() {
 
     LOG(INFO, "GSM07.10 muxer thread exiting");
 
+    if (state_ == State::Error) {
+        // Notify that all the currently opened channels have closed
+        forceClose();
+    }
+
     xEventGroupSetBits(events_, EVENT_STOPPED);
 
     return 0;
