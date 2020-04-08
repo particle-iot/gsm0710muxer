@@ -24,6 +24,17 @@
 #include "gsm0710muxer/muxer_def.h"
 #include "gsm0710muxer/platform.h"
 
+#ifdef GSM0710_SHARED_STREAM_EVENT_GROUP
+#ifndef GSM0710_SHARED_STREAM_EVENT_BASE
+#error "GSM0710_SHARED_STREAM_EVENT_BASE needs to be defined along with GSM0710_SHARED_STREAM_EVENT_GROUP"
+#else
+#define GSM0710_EVENT_BASE (GSM0710_SHARED_STREAM_EVENT_BASE)
+#endif // GSM0710_SHARED_STREAM_EVENT_BASE
+#else
+#define GSM0710_EVENT_BASE (0)
+#endif // GSM0710_SHARED_STREAM_EVENT_GROUP
+
+
 namespace gsm0710 {
 
 namespace portable {
@@ -179,6 +190,7 @@ private:
 
     int sendChannel(uint8_t channel, uint8_t control, bool cmd, const uint8_t* data, size_t len);
     int controlSend(proto::ControlChannelCommand cmd, const uint8_t* data, size_t size);
+    int controlProcess();
     int controlReply(proto::ControlChannelCommand cmd, const uint8_t* data, size_t size);
     int commandSend(uint8_t channel, uint8_t control);
     int responseSend(uint8_t channel, uint8_t control);
@@ -202,13 +214,16 @@ private:
     EventGroupHandle_t channelEvents_ = nullptr;
 
     enum EventSet {
-        EVENT_STATE_CHANGED          = 0x01,
-        EVENT_CONTROL_STATE_CHANGED  = 0x02,
-        EVENT_INPUT_DATA             = 0x04,
-        EVENT_STOP                   = 0x08,
-        EVENT_WAKEUP                 = 0x10,
-        EVENT_STOPPED                = 0x20,
-        EVENT_MAX                    = 0x40
+        EVENT_STATE_CHANGED          = 0x01 << GSM0710_EVENT_BASE,
+#ifndef GSM0710_SHARED_STREAM_EVENT_GROUP
+        EVENT_INPUT_DATA             = 0x02 << GSM0710_EVENT_BASE,
+#else
+        EVENT_INPUT_DATA             = StreamT::READABLE,
+#endif // GSM0710_SHARED_STREAM_EVENT_GROUP
+        EVENT_STOP                   = 0x04 << GSM0710_EVENT_BASE,
+        EVENT_WAKEUP                 = 0x08 << GSM0710_EVENT_BASE,
+        EVENT_STOPPED                = 0x10 << GSM0710_EVENT_BASE,
+        EVENT_MAX                    = 0x20 << GSM0710_EVENT_BASE
     };
 
     std::atomic<State> state_;

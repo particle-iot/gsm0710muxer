@@ -23,6 +23,9 @@
 #include "gsm0710muxer/muxer_def.h"
 #include "gsm0710muxer/platform.h"
 
+#undef LOG_COMPILE_TIME_LEVEL
+#define LOG_COMPILE_TIME_LEVEL LOG_LEVEL_ALL
+
 #ifdef GSM0710_ENABLE_DEBUG_LOGGING
 #define GSM0710_LOG_DEBUG(_level, _fmt, ...) LOG_DEBUG(_level, _fmt, ##__VA_ARGS__)
 #else
@@ -120,8 +123,13 @@ inline int Muxer<StreamT, MutexT>::start(bool initiator) {
         }
 
         if (!events_) {
+#ifndef GSM0710_SHARED_STREAM_EVENT_GROUP
             events_ = xEventGroupCreate();
             CHECK_TRUE(events_, GSM0710_ERROR_NO_MEMORY);
+#else
+            events_ = stream_->eventGroup();
+            CHECK_TRUE(events_, GSM0710_ERROR_INVALID_STATE);
+#endif // GSM0710_SHARED_STREAM_EVENT_GROUP
         }
 
         if (!channelEvents_) {
@@ -334,13 +342,24 @@ inline int Muxer<StreamT, MutexT>::suspendChannel(uint8_t channel) {
     auto c = getChannel(channel);
     CHECK_TRUE(c, GSM0710_ERROR_INVALID_ARGUMENT);
 
-    LOG(INFO, "Suspending channel %u", channel);
+    GSM0710_LOG_DEBUG(INFO, "Suspending channel %u", channel);
 
-    std::lock_guard<MutexT> lk(mutex_);
+    bool update = false;
+    {
+        std::lock_guard<MutexT> lk(mutex_);
 
-    c->localModemState &= ~(proto::RTR | proto::RTC);
-    c->update = true;
-    xEventGroupSetBits(events_, EVENT_WAKEUP);
+        auto newState = c->localModemState | proto::FC;
+#ifdef GSM0710_FLOW_CONTROL_RTR
+        newState &= ~(proto::RTR);
+#endif // GSM0710_FLOW_CONTROL_RTR
+        if (newState != c->localModemState) {
+            c->localModemState = newState;
+            c->update = update = true;
+        }
+    }
+    if (update) {
+        xEventGroupSetBits(events_, EVENT_WAKEUP);
+    }
 
     return 0;
 }
@@ -351,13 +370,21 @@ inline int Muxer<StreamT, MutexT>::resumeChannel(uint8_t channel) {
     auto c = getChannel(channel);
     CHECK_TRUE(c, GSM0710_ERROR_INVALID_ARGUMENT);
 
-    LOG(INFO, "Resuming channel %d", channel);
+    GSM0710_LOG_DEBUG(INFO, "Resuming channel %d", channel);
 
-    std::lock_guard<MutexT> lk(mutex_);
+    bool update = false;
+    {
+        std::lock_guard<MutexT> lk(mutex_);
 
-    c->localModemState |= (proto::RTR | proto::RTC);
-    c->update = true;
-    xEventGroupSetBits(events_, EVENT_WAKEUP);
+        const auto newState = (c->localModemState | ((proto::RTR | proto::RTC))) & ~(proto::FC);
+        if (newState != c->localModemState) {
+            c->localModemState = newState;
+            c->update = update = true;
+        }
+    }
+    if (update) {
+        xEventGroupSetBits(events_, EVENT_WAKEUP);
+    }
 
     return 0;
 }
@@ -377,7 +404,7 @@ inline int Muxer<StreamT, MutexT>::writeChannel(uint8_t channel, const uint8_t* 
 
 template<typename StreamT, typename MutexT>
 inline int Muxer<StreamT, MutexT>::waitWritable(Channel* chan, unsigned int timeout) {
-    if ((chan->remoteModemState & (proto::RTR))) {
+    if ((chan->remoteModemState & (proto::RTR | proto::FC)) == proto::RTR) {
         return 0;
     } else if (timeout > 0) {
         auto t1 = portable::getMillis();
@@ -386,7 +413,7 @@ inline int Muxer<StreamT, MutexT>::waitWritable(Channel* chan, unsigned int time
             int toWait = timeout - (portable::getMillis() - t1);
             if (toWait > 0) {
                 xEventGroupWaitBits(channelEvents_, EVENT_STATE_CHANGED << chan->channel, pdTRUE, pdFALSE, toWait / portTICK_RATE_MS);
-                if (chan->remoteModemState & proto::RTR) {
+                if ((chan->remoteModemState & (proto::RTR | proto::FC)) == proto::RTR) {
                     return 0;
                 }
             }
@@ -420,8 +447,16 @@ inline int Muxer<StreamT, MutexT>::run() {
         nextTimeout = std::min(nextTimeout, GSM0710_PUMP_INPUT_DATA);
 #endif
 
+#ifndef GSM0710_SHARED_STREAM_EVENT_GROUP
         auto ev = xEventGroupWaitBits(events_, EVENT_INPUT_DATA | EVENT_STOP | EVENT_WAKEUP, pdTRUE,
                 pdFALSE, nextTimeout / portTICK_RATE_MS);
+#else
+        auto ev = stream_->waitEvent(EVENT_INPUT_DATA | EVENT_STOP | EVENT_WAKEUP, nextTimeout);
+        if (ev < 0) {
+            transition(State::Error);
+            break;
+        }
+#endif // GSM0710_SHARED_STREAM_EVENT_GROUP
 
         if ((ev & EVENT_STOP) || stopping_) {
             stopMuxer();
@@ -521,6 +556,7 @@ inline int Muxer<StreamT, MutexT>::processInputData() {
     bool forceExit = false;
 
     while (toParse() > 0 && !forceExit && state_ != State::Stopped) {
+        int channelDataResult = 0;
         GSM0710_LOG_DEBUG(TRACE, "Data in buffer = %u, parser position = %u", inBufData_, inBufParserPos_);
         switch (state_) {
             case State::Idle: {
@@ -644,7 +680,7 @@ inline int Muxer<StreamT, MutexT>::processInputData() {
                 parsed(1);
                 if (validateFcs(frame_.fcs, inBuf_.get() + 1, frame_.hlen - 1)) {
                     // Valid frame, process frame data
-                    processChannelData();
+                    channelDataResult = processChannelData();
                 } else {
                     GSM0710_LOG_DEBUG(ERROR, "Invalid FCS");
                 }
@@ -662,6 +698,19 @@ inline int Muxer<StreamT, MutexT>::processInputData() {
                 return GSM0710_ERROR_INVALID_STATE;
             }
         }
+
+        if (state_ == State::Idle) {
+            // There is some critical stuff we might need to do while we are parsing incoming data
+            while (isRunning() && CHECK(processTimeouts()) == 0) {
+            }
+#ifdef GSM0710_RELAX_WHEN_CHANNEL_IN_FLOW_CONTROL
+            if (channelDataResult == GSM0710_ERROR_FLOW_CONTROL) {
+                // Not an error, we need to relax a bit.
+                // Waiting for a wakeup or up to GSM0710_RELAX_WHEN_CHANNEL_IN_FLOW_CONTROL ms
+                xEventGroupWaitBits(events_, EVENT_WAKEUP, pdFALSE, pdFALSE, GSM0710_RELAX_WHEN_CHANNEL_IN_FLOW_CONTROL / portTICK_RATE_MS);
+            }
+#endif // GSM0710_RELAX_WHEN_CHANNEL_IN_FLOW_CONTROL
+        }
     }
 
     return 0;
@@ -669,27 +718,19 @@ inline int Muxer<StreamT, MutexT>::processInputData() {
 
 template<typename StreamT, typename MutexT>
 inline int Muxer<StreamT, MutexT>::processTimeouts() {
+    xEventGroupClearBits(events_, EVENT_WAKEUP);
+
     if (!initiator_ && getChannel(0)->state != ChannelState::Opened && !isStopping()) {
         // FIXME: for now returning T1 / 2
+        if (toParse() > 0) {
+            return 1;
+        }
         return getAckTimeout() / 2;
     }
 
     std::lock_guard<MutexT> lk(mutex_);
 
-    if (ctrl_.state == ControlCommand::State::Pending) {
-        if ((portable::getMillis() - ctrl_.timestamp) >= getControlResponseTimeout()) {
-            // Time to retry
-            if (ctrl_.retries++ < getMaxRetransmissions()) {
-                GSM0710_LOG_DEBUG(TRACE, "(%d/%d) Retrying control command: %02x, len = %u",
-                        ctrl_.retries, getMaxRetransmissions(), ctrl_.command, ctrl_.len);
-                CHECK(sendChannel(0, proto::UIH, true, ctrl_.data, ctrl_.len));
-                ctrl_.timestamp = portable::getMillis();
-            } else {
-                ctrl_.state = ControlCommand::State::Timeout;
-                controlFinished();
-            }
-        }
-    }
+    int timeout = CHECK(controlProcess());
 
     for (unsigned c = 0; c < sizeof(channels_) / sizeof(channels_[0]); c++) {
         auto chan = &channels_[c];
@@ -707,6 +748,7 @@ inline int Muxer<StreamT, MutexT>::processTimeouts() {
                         CHECK(commandSend(c, proto::SABM | proto::PF));
                     }
                     chan->timestamp = portable::getMillis();
+                    timeout = std::min<decltype(timeout)>(timeout, getAckTimeout());
                 } else {
                     if (chan->state == ChannelState::Closing) {
                         GSM0710_LOG_DEBUG(ERROR, "Failed to close channel %u", chan->channel);
@@ -715,6 +757,8 @@ inline int Muxer<StreamT, MutexT>::processTimeouts() {
                     }
                     channelTransition(chan, ChannelState::Error);
                 }
+            } else {
+                timeout = std::min<decltype(timeout)>(timeout, getAckTimeout() - (portable::getMillis() - chan->timestamp));
             }
         } else if (c > 0 && chan->update == true && chan->state == ChannelState::Opened) {
             if (ctrl_.state != ControlCommand::State::Pending) {
@@ -724,18 +768,30 @@ inline int Muxer<StreamT, MutexT>::processTimeouts() {
         }
     }
 
-    if (initiator_ && getChannel(0)->state == ChannelState::Opened && keepAlivePeriod_ && !stopping_ && ctrl_.state != ControlCommand::State::Pending &&
-            (portable::getMillis() - lastKeepAlive_) >= keepAlivePeriod_) {
-        if (!useMscKeepAlive_) {
-            CHECK(controlSend(proto::TEST, (const uint8_t*)"abc", 3));
+    if (initiator_ && getChannel(0)->state == ChannelState::Opened && keepAlivePeriod_ && !stopping_ && ctrl_.state != ControlCommand::State::Pending) {
+        if ((portable::getMillis() - lastKeepAlive_) >= keepAlivePeriod_) {
+            if (!useMscKeepAlive_) {
+                CHECK(controlSend(proto::TEST, (const uint8_t*)"abc", 3));
+            } else {
+                CHECK(modemStatusSend(getChannel(1)));
+            }
+            lastKeepAlive_ = portable::getMillis();
+            timeout = std::min<decltype(timeout)>(timeout, keepAlivePeriod_);
         } else {
-            CHECK(modemStatusSend(getChannel(1)));
+            timeout = std::min<decltype(timeout)>(timeout, keepAlivePeriod_ - (portable::getMillis() - lastKeepAlive_));
         }
-        lastKeepAlive_ = portable::getMillis();
     }
 
-    // FIXME: for now returning T1 / 2
-    return getAckTimeout() / 2;
+    if (timeout < 0) {
+        timeout = 0;
+    } else {
+        if (toParse() > 0) {
+            timeout = std::min(timeout, 1);
+        }
+    }
+
+    // FIXME: for now returning up to T1 / 2
+    return std::min<int>(timeout, getAckTimeout() / 2);
 }
 
 template<typename StreamT, typename MutexT>
@@ -744,7 +800,7 @@ inline int Muxer<StreamT, MutexT>::processChannelData() {
 
     uint8_t channel = frame_.address >> 2;
     GSM0710_LOG_DEBUG(TRACE, "New frame on channel %u, control = %02x, length = %u, fcs = %02x",
-            channel, frame_.control, frame_.length, frame_.fcs);;
+            channel, frame_.control, frame_.length, frame_.fcs);
     auto c = getChannel(channel);
     switch (frame_.control) {
         case proto::SABM | proto::PF: {
@@ -843,6 +899,11 @@ inline int Muxer<StreamT, MutexT>::processChannelData() {
                     } else {
                         GSM0710_LOG_DEBUG(TRACE, "Frame ignored, no channel data handler set");
                     }
+#ifdef GSM0710_RELAX_WHEN_CHANNEL_IN_FLOW_CONTROL
+                    if (c->localModemState & proto::FC) {
+                        return GSM0710_ERROR_FLOW_CONTROL;
+                    }
+#endif // GSM0710_RELAX_WHEN_CHANNEL_IN_FLOW_CONTROL
                 } else {
                     if (frame_.length > 1) {
                         processControlMessage();
@@ -1075,8 +1136,10 @@ inline int Muxer<StreamT, MutexT>::sendChannel(uint8_t channel, uint8_t control,
     while (sent < hlen) {
         sent += CHECK(stream_->write((const char*)header + sent, hlen - sent));
         if ((portable::getMillis() - t1) > getControlResponseTimeout() * 2) {
+            GSM0710_LOG_DEBUG(ERROR, "Timeout writing into stream");
             return GSM0710_ERROR_FLOW_CONTROL;
         }
+        CHECK(stream_->waitEvent(StreamT::WRITABLE, std::max<int>(0, getControlResponseTimeout() * 2 - (portable::getMillis() - t1))));
     }
 
     t1 = portable::getMillis();
@@ -1085,8 +1148,10 @@ inline int Muxer<StreamT, MutexT>::sendChannel(uint8_t channel, uint8_t control,
         while (sent < len) {
             sent += CHECK(stream_->write((const char*)data + sent, len - sent));
             if ((portable::getMillis() - t1) > getControlResponseTimeout() * 2) {
+                GSM0710_LOG_DEBUG(ERROR, "Timeout writing into stream");
                 return GSM0710_ERROR_FLOW_CONTROL;
             }
+            CHECK(stream_->waitEvent(StreamT::WRITABLE, std::max<int>(0, getControlResponseTimeout() * 2 - (portable::getMillis() - t1))));
         }
     }
 
@@ -1095,8 +1160,10 @@ inline int Muxer<StreamT, MutexT>::sendChannel(uint8_t channel, uint8_t control,
     while (sent < sizeof(footer)) {
         sent += CHECK(stream_->write((const char*)footer + sent, sizeof(footer) - sent));
         if ((portable::getMillis() - t1) > getControlResponseTimeout() * 2) {
+            GSM0710_LOG_DEBUG(ERROR, "Timeout writing into stream");
             return GSM0710_ERROR_FLOW_CONTROL;
         }
+        CHECK(stream_->waitEvent(StreamT::WRITABLE, std::max<int>(0, getControlResponseTimeout() * 2 - (portable::getMillis() - t1))));
     }
 
     return 0;
@@ -1107,18 +1174,6 @@ inline int Muxer<StreamT, MutexT>::controlSend(proto::ControlChannelCommand cmd,
     GSM0710_LOG_DEBUG(TRACE, "Sending control command %02x, length = %u", cmd, size);
     std::unique_lock<MutexT> lk(mutex_);
 
-    while (true) {
-        if (ctrl_.state == ControlCommand::State::Pending) {
-            GSM0710_LOG_DEBUG(TRACE, "Waiting for current pending control command (%02x) to get acked or timeout",
-                    ctrl_.command);
-            lk.unlock();
-            xEventGroupWaitBits(events_, EVENT_CONTROL_STATE_CHANGED, pdTRUE, pdFALSE, 100 / portTICK_RATE_MS);
-            lk.lock();
-        } else {
-            break;
-        }
-    }
-
     ctrl_.state = ControlCommand::State::Pending;
     ctrl_.len = 2 + size;
     ctrl_.command = cmd | proto::CR;
@@ -1128,8 +1183,36 @@ inline int Muxer<StreamT, MutexT>::controlSend(proto::ControlChannelCommand cmd,
     ctrl_.timestamp = 0;
     ctrl_.retries = 0;
     lk.unlock();
-    xEventGroupSetBits(events_, EVENT_WAKEUP);
+
+    // Immediately process
+    controlProcess();
+
     return 0;
+}
+
+template<typename StreamT, typename MutexT>
+inline int Muxer<StreamT, MutexT>::controlProcess() {
+    int timeout = std::numeric_limits<int>::max();
+
+    if (ctrl_.state == ControlCommand::State::Pending) {
+        if ((portable::getMillis() - ctrl_.timestamp) >= getControlResponseTimeout()) {
+            // Time to retry
+            if (ctrl_.retries++ < getMaxRetransmissions()) {
+                GSM0710_LOG_DEBUG(TRACE, "(%d/%d) Retrying control command: %02x, len = %u",
+                        ctrl_.retries, getMaxRetransmissions(), ctrl_.command, ctrl_.len);
+                CHECK(sendChannel(0, proto::UIH, true, ctrl_.data, ctrl_.len));
+                ctrl_.timestamp = portable::getMillis();
+                timeout = getControlResponseTimeout();
+            } else {
+                ctrl_.state = ControlCommand::State::Timeout;
+                controlFinished();
+            }
+        } else {
+            timeout = std::min<decltype(timeout)>(timeout, getControlResponseTimeout() - (portable::getMillis() - ctrl_.timestamp));
+        }
+    }
+
+    return timeout;
 }
 
 template<typename StreamT, typename MutexT>
