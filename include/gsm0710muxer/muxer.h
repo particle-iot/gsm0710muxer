@@ -56,10 +56,12 @@ public:
 
     int notifyInput(size_t size = 0);
 
-    int start(bool initiator = false);
+    int start(bool initiator = false, bool openZeroChannel = true);
     int stop();
     bool isRunning();
     bool isStopping();
+
+    int ping();
 
     void setAckTimeout(unsigned int t1);
     void setControlResponseTimeout(unsigned int t2);
@@ -79,6 +81,7 @@ public:
     typedef int (*ChannelDataHandler)(const uint8_t* data, size_t len, void* ctx);
 
     int openChannel(uint8_t channel, ChannelDataHandler handler = nullptr, void* ctx = nullptr);
+    int forceOpenChannel(uint8_t channel);
     int closeChannel(uint8_t channel);
     int setChannelDataHandler(uint8_t channel, ChannelDataHandler handler, void* ctx);
     int suspendChannel(uint8_t channel);
@@ -223,7 +226,8 @@ private:
         EVENT_STOP                   = 0x04 << GSM0710_EVENT_BASE,
         EVENT_WAKEUP                 = 0x08 << GSM0710_EVENT_BASE,
         EVENT_STOPPED                = 0x10 << GSM0710_EVENT_BASE,
-        EVENT_MAX                    = 0x20 << GSM0710_EVENT_BASE
+        EVENT_PING                   = 0x20 << GSM0710_EVENT_BASE,
+        EVENT_MAX                    = 0x40 << GSM0710_EVENT_BASE
     };
 
     std::atomic<State> state_;
@@ -248,7 +252,7 @@ private:
     unsigned int keepAlivePeriod_ = 0;
     bool useMscKeepAlive_ = false;
 
-    uint64_t lastKeepAlive_ = 0;
+    int64_t lastKeepAlive_ = 0;
     unsigned int keepAliveMaxMissed_ = 0;
     unsigned int keepAlivesMissed_ = 0;
 

@@ -93,7 +93,7 @@ inline int Muxer<StreamT, MutexT>::notifyInput(size_t size) {
 }
 
 template<typename StreamT, typename MutexT>
-inline int Muxer<StreamT, MutexT>::start(bool initiator) {
+inline int Muxer<StreamT, MutexT>::start(bool initiator, bool openZeroChannel) {
     stop();
 
     LOG(INFO, "Starting GSM07.10 muxer");
@@ -155,7 +155,7 @@ inline int Muxer<StreamT, MutexT>::start(bool initiator) {
         }
     }
 
-    if (initiator) {
+    if (initiator && openZeroChannel) {
         return openChannel(0);
     }
 
@@ -190,6 +190,24 @@ inline bool Muxer<StreamT, MutexT>::isRunning() {
 template<typename StreamT, typename MutexT>
 inline bool Muxer<StreamT, MutexT>::isStopping() {
     return !isRunning() || stopping_;
+}
+
+template<typename StreamT, typename MutexT>
+inline int Muxer<StreamT, MutexT>::ping() {
+    CHECK_TRUE(!isStopping(), GSM0710_ERROR_INVALID_STATE);
+    {
+        std::lock_guard<MutexT> lk(mutex_);
+        lastKeepAlive_ = std::numeric_limits<decltype(lastKeepAlive_)>::min();
+        xEventGroupClearBits(events_, EVENT_PING);
+    }
+    xEventGroupSetBits(events_, EVENT_WAKEUP);
+    // FIXME:
+    auto bits = xEventGroupWaitBits(events_, EVENT_PING, pdTRUE, pdFALSE, getControlResponseTimeout() / portTICK_RATE_MS);
+    if (bits & EVENT_PING) {
+        return 0;
+    }
+
+    return GSM0710_ERROR_TIMEOUT;
 }
 
 template<typename StreamT, typename MutexT>
@@ -295,6 +313,24 @@ inline int Muxer<StreamT, MutexT>::openChannel(uint8_t channel, ChannelDataHandl
 
     return r;
 }
+
+template<typename StreamT, typename MutexT>
+inline int Muxer<StreamT, MutexT>::forceOpenChannel(uint8_t channel) {
+    CHECK_TRUE(!isStopping(), GSM0710_ERROR_INVALID_STATE);
+    auto c = getChannel(channel);
+
+    CHECK_TRUE(c, GSM0710_ERROR_INVALID_ARGUMENT);
+
+    if (c->state != ChannelState::Opened) {
+        std::lock_guard<MutexT> lk(mutex_);
+        c->reset();
+        channelTransition(c, ChannelState::Opened);
+        c->timestamp = 0;
+        c->retries = 0;
+    }
+    return 0;
+}
+
 
 template<typename StreamT, typename MutexT>
 inline int Muxer<StreamT, MutexT>::closeChannel(uint8_t channel) {
@@ -1033,6 +1069,7 @@ inline int Muxer<StreamT, MutexT>::controlFinished() {
             (useMscKeepAlive_ && ctrl_.command == (proto::MSC | proto::CR) && (ctrl_.data[2] >> 2) == 1)) {
         if (ctrl_.state != ControlCommand::State::Timeout) {
             keepAlivesMissed_ = 0;
+            xEventGroupSetBits(events_, EVENT_PING);
         } else {
             keepAlivesMissed_++;
             if (keepAliveMaxMissed_ && keepAlivesMissed_ >= keepAliveMaxMissed_) {
