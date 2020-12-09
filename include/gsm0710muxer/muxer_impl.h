@@ -137,7 +137,7 @@ inline int Muxer<StreamT, MutexT>::start(bool initiator, bool openZeroChannel) {
             CHECK_TRUE(channelEvents_, GSM0710_ERROR_NO_MEMORY);
         }
 
-        xEventGroupClearBits(events_, EVENT_MAX - 1);
+        xEventGroupClearBits(events_, ~((0x01UL << GSM0710_EVENT_BASE) - 1));
         xEventGroupClearBits(channelEvents_,
                 ((EVENT_STATE_CHANGED << ((sizeof(channels_) / sizeof(channels_[0])) + 1)) - 1));
 
