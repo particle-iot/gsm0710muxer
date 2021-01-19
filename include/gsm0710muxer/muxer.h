@@ -70,6 +70,7 @@ public:
     void setKeepAlivePeriod(unsigned int p);
     void setKeepAliveMaxMissed(unsigned int m);
     void useMscAsKeepAlive(bool val);
+    int setLogCategory(const char* category);
 
     unsigned int getAckTimeout();
     unsigned int getControlResponseTimeout();
@@ -77,6 +78,7 @@ public:
     unsigned int getMaxRetransmissions();
     unsigned int getKeepAlivePeriod();
     unsigned int getKeepAliveMaxMissed();
+    const char* getLogCategory() const;
 
     typedef int (*ChannelDataHandler)(const uint8_t* data, size_t len, void* ctx);
 
@@ -259,10 +261,7 @@ private:
     ControlCommand ctrl_ = {};
 
     CurrentFrameState frame_ = {};
-
-#ifdef LOG_CATEGORY
-    LOG_CATEGORY("gsm0710muxer");
-#endif // LOG_CATEGORY
+    std::unique_ptr<char[]> logCategory_;
 };
 
 } // gsm0710

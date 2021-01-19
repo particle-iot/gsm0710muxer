@@ -27,10 +27,12 @@
 #define LOG_COMPILE_TIME_LEVEL LOG_LEVEL_ALL
 
 #ifdef GSM0710_ENABLE_DEBUG_LOGGING
-#define GSM0710_LOG_DEBUG(_level, _fmt, ...) LOG_DEBUG(_level, _fmt, ##__VA_ARGS__)
+#define GSM0710_LOG_DEBUG(_level, _fmt, ...) LOG_DEBUG_C(_level, getLogCategory(), _fmt, ##__VA_ARGS__)
 #else
 #define GSM0710_LOG_DEBUG(_level, _fmt, ...)
 #endif // GSM0710_ENABLE_DEBUG_LOGGING
+
+#define GSM0710_LOG(_level, _fmt, ...) LOG_C(_level, getLogCategory(), _fmt, ##__VA_ARGS__)
 
 namespace gsm0710 {
 
@@ -96,7 +98,7 @@ template<typename StreamT, typename MutexT>
 inline int Muxer<StreamT, MutexT>::start(bool initiator, bool openZeroChannel) {
     stop();
 
-    LOG(INFO, "Starting GSM07.10 muxer");
+    GSM0710_LOG(INFO, "Starting GSM07.10 muxer");
 
     {
         std::lock_guard<MutexT> lk(mutex_);
@@ -168,7 +170,7 @@ inline int Muxer<StreamT, MutexT>::stop() {
         return GSM0710_ERROR_NONE;
     }
 
-    LOG(INFO, "Stopping GSM07.10 muxer");
+    GSM0710_LOG(INFO, "Stopping GSM07.10 muxer");
 
     if (isRunning()) {
         xEventGroupSetBits(events_, EVENT_STOP);
@@ -177,7 +179,7 @@ inline int Muxer<StreamT, MutexT>::stop() {
 
     thread_ = nullptr;
 
-    LOG(INFO, "GSM07.10 muxer stopped");
+    GSM0710_LOG(INFO, "GSM07.10 muxer stopped");
 
     return 0;
 }
@@ -285,7 +287,7 @@ inline int Muxer<StreamT, MutexT>::openChannel(uint8_t channel, ChannelDataHandl
     int r = 0;
 
     if (c->state == ChannelState::Closed || c->state == ChannelState::Closing || c->state == ChannelState::Error) {
-        LOG(INFO, "Openning mux channel %u", channel);
+        GSM0710_LOG(INFO, "Openning mux channel %u", channel);
         {
             std::lock_guard<MutexT> lk(mutex_);
             c->reset();
@@ -303,7 +305,7 @@ inline int Muxer<StreamT, MutexT>::openChannel(uint8_t channel, ChannelDataHandl
             r = resumeChannel(channel);
         }
     } else {
-        LOG(INFO, "Mux channel %u already opened", channel);
+        GSM0710_LOG(INFO, "Mux channel %u already opened", channel);
         std::lock_guard<MutexT> lk(mutex_);
         if (handler != nullptr) {
             c->handler = handler;
@@ -349,12 +351,12 @@ inline int Muxer<StreamT, MutexT>::closeChannelImpl(uint8_t channel) {
     CHECK_TRUE(c, GSM0710_ERROR_INVALID_ARGUMENT);
 
     if (c->state == ChannelState::Opened || c->state == ChannelState::Opening) {
-        LOG(INFO, "Closing mux channel %u", channel);
+        GSM0710_LOG(INFO, "Closing mux channel %u", channel);
         channelTransition(c, ChannelState::Closing);
         c->timestamp = 0;
         c->retries = 0;
     } else {
-        LOG(INFO, "Muxed channel %u already closed", channel);
+        GSM0710_LOG(INFO, "Muxed channel %u already closed", channel);
     }
     return 0;
 }
@@ -469,7 +471,7 @@ inline int Muxer<StreamT, MutexT>::setChannelStateHandler(ChannelStateHandler ha
 
 template<typename StreamT, typename MutexT>
 inline int Muxer<StreamT, MutexT>::run() {
-    LOG(INFO, "GSM07.10 muxer thread started");
+    GSM0710_LOG(INFO, "GSM07.10 muxer thread started");
     transition(State::Idle);
 
     while (state_ != State::Stopped && state_ != State::Error) {
@@ -519,7 +521,7 @@ inline int Muxer<StreamT, MutexT>::run() {
         }
     }
 
-    LOG(INFO, "GSM07.10 muxer thread exiting");
+    GSM0710_LOG(INFO, "GSM07.10 muxer thread exiting");
 
     if (state_ == State::Error) {
         // Notify that all the currently opened channels have closed
@@ -541,8 +543,8 @@ inline int Muxer<StreamT, MutexT>::stopMuxer() {
     std::lock_guard<MutexT> lk(mutex_);
 
     if (!stopping_) {
-        LOG(INFO, "Gracefully stopping GSM07.10 muxer");
-        LOG(INFO, "Closing all muxed channels");
+        GSM0710_LOG(INFO, "Gracefully stopping GSM07.10 muxer");
+        GSM0710_LOG(INFO, "Closing all muxed channels");
         for (unsigned c = 1; c < sizeof(channels_) / sizeof(channels_[0]); c++) {
             closeChannelImpl(c);
         }
@@ -559,7 +561,7 @@ inline int Muxer<StreamT, MutexT>::stopMuxer() {
     }
 
     if (readyToCld && ctrl_.state != ControlCommand::State::Pending) {
-        LOG(INFO, "Sending CLD (multiplexer close down)");
+        GSM0710_LOG(INFO, "Sending CLD (multiplexer close down)");
         controlSend(proto::CLD, nullptr, 0);
     }
 
@@ -906,7 +908,7 @@ inline int Muxer<StreamT, MutexT>::processChannelData() {
                 GSM0710_LOG_DEBUG(TRACE, "Replying with UA");
                 responseSend(channel, proto::UA | proto::PF);
                 if (channel == 0) {
-                    LOG(INFO, "Muxer channel 0 closed by the other side, exiting multiplexed mode");
+                    GSM0710_LOG(INFO, "Muxer channel 0 closed by the other side, exiting multiplexed mode");
                     forceClose();
                 }
             }
@@ -1000,7 +1002,7 @@ inline int Muxer<StreamT, MutexT>::processControlCommand(uint8_t oCmd, const uin
         }
 
         case proto::CLD: {
-            LOG(INFO, "Received CLD, exiting multiplexed mode");
+            GSM0710_LOG(INFO, "Received CLD, exiting multiplexed mode");
             CHECK_TRUE(length == 0, GSM0710_ERROR_BAD_DATA);
             // Ack
             controlReply(proto::CLD, nullptr, 0);
@@ -1063,7 +1065,7 @@ template<typename StreamT, typename MutexT>
 inline int Muxer<StreamT, MutexT>::controlFinished() {
     GSM0710_LOG_DEBUG(TRACE, "Control command %02x finished, result = %s", ctrl_.command, ctrl_.stateName(ctrl_.state));
     if (ctrl_.command == (proto::CLD | proto::CR) && stopping_) {
-        LOG(INFO, "Received response to CLD or timed out, exiting multiplexed mode");
+        GSM0710_LOG(INFO, "Received response to CLD or timed out, exiting multiplexed mode");
         forceClose();
     } else if ((ctrl_.command == (proto::TEST | proto::CR)) ||
             (useMscKeepAlive_ && ctrl_.command == (proto::MSC | proto::CR) && (ctrl_.data[2] >> 2) == 1)) {
@@ -1073,7 +1075,7 @@ inline int Muxer<StreamT, MutexT>::controlFinished() {
         } else {
             keepAlivesMissed_++;
             if (keepAliveMaxMissed_ && keepAlivesMissed_ >= keepAliveMaxMissed_) {
-                LOG(ERROR, "The other end has not replied to keep alives (TESTs) %u times, considering muxed connection dead", keepAlivesMissed_);
+                GSM0710_LOG(ERROR, "The other end has not replied to keep alives (TESTs) %u times, considering muxed connection dead", keepAlivesMissed_);
                 forceClose();
             }
         }
@@ -1378,6 +1380,23 @@ inline const char* Muxer<StreamT, MutexT>::stateName(State state) {
         "Error"
     };
     return stateNames[static_cast<typename std::underlying_type<State>::type>(state)];
+}
+
+template<typename StreamT, typename MutexT>
+inline int Muxer<StreamT, MutexT>::setLogCategory(const char* category) {
+    std::unique_lock<MutexT> lk(mutex_);
+    if (category) {
+        logCategory_.reset(strdup(category));
+        CHECK_TRUE(logCategory_, GSM0710_ERROR_NO_MEMORY);
+    } else {
+        logCategory_.reset();
+    }
+    return 0;
+}
+
+template<typename StreamT, typename MutexT>
+inline const char* Muxer<StreamT, MutexT>::getLogCategory() const {
+    return logCategory_ ? static_cast<const char*>(logCategory_.get()) : DEFAULT_LOG_CATEGORY;
 }
 
 // Muxer::Channel
