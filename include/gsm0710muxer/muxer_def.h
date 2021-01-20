@@ -40,7 +40,7 @@ enum {
     GSM0710_ERROR(8, FLOW_CONTROL)
 };
 
-constexpr const char DEFAULT_LOG_CATEGORY[] = "mux";
+constexpr char DEFAULT_LOG_CATEGORY[] = "mux";
 
 namespace proto {
 
