@@ -40,6 +40,8 @@ enum {
     GSM0710_ERROR(8, FLOW_CONTROL)
 };
 
+constexpr char DEFAULT_LOG_CATEGORY[] = "mux";
+
 namespace proto {
 
 enum Address {
