@@ -410,15 +410,19 @@ inline int Muxer<StreamT, MutexT>::resumeChannel(uint8_t channel) {
 
     GSM0710_LOG_DEBUG(INFO, "Resuming channel %d", channel);
 
+    bool update = false;
     {
         std::lock_guard<MutexT> lk(mutex_);
 
         const auto newState = (c->localModemState | ((proto::RTR | proto::RTC))) & ~(proto::FC);
-        c->localModemState = newState;
-        c->update = true;
+        if (c->localModemState != newState) {
+            c->localModemState = newState;
+            c->update = update = true;
+        }
     }
-
-    xEventGroupSetBits(events_, EVENT_WAKEUP);
+    if (update) {
+        xEventGroupSetBits(events_, EVENT_WAKEUP);
+    }
 
     return 0;
 }
@@ -1428,7 +1432,7 @@ template<typename StreamT, typename MutexT>
 inline void Muxer<StreamT, MutexT>::Channel::reset() {
     state = ChannelState::Closed;
     handler = nullptr;
-    localModemState = (proto::RTR | proto::RTC);
+    localModemState = 0;
     remoteModemState = (proto::RTR | proto::RTC);
     update = false;
     convergence = proto::UNSTRUCTURED;
