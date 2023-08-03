@@ -26,6 +26,8 @@
 #undef LOG_COMPILE_TIME_LEVEL
 #define LOG_COMPILE_TIME_LEVEL LOG_LEVEL_ALL
 
+// #define GSM0710_ENABLE_DEBUG_LOGGING (1)
+
 #ifdef GSM0710_ENABLE_DEBUG_LOGGING
 #define GSM0710_LOG_DEBUG(_level, _fmt, ...) LOG_DEBUG_C(_level, getLogCategory(), _fmt, ##__VA_ARGS__)
 #else
@@ -235,6 +237,7 @@ inline void Muxer<StreamT, MutexT>::setMaxRetransmissions(unsigned int n2) {
 template<typename StreamT, typename MutexT>
 inline void Muxer<StreamT, MutexT>::setKeepAlivePeriod(unsigned int p) {
     keepAlivePeriod_ = p;
+    lastKeepAlive_ = portable::getMillis();
 }
 
 template<typename StreamT, typename MutexT>
@@ -287,7 +290,7 @@ inline int Muxer<StreamT, MutexT>::openChannel(uint8_t channel, ChannelDataHandl
     int r = 0;
 
     if (c->state == ChannelState::Closed || c->state == ChannelState::Closing || c->state == ChannelState::Error) {
-        GSM0710_LOG(INFO, "Openning mux channel %u", channel);
+        GSM0710_LOG(INFO, "Opening mux channel %u", channel);
         {
             std::lock_guard<MutexT> lk(mutex_);
             c->reset();
@@ -813,6 +816,7 @@ inline int Muxer<StreamT, MutexT>::processTimeouts() {
             } else {
                 CHECK(modemStatusSend(getChannel(1)));
             }
+            GSM0710_LOG_DEBUG(TRACE, "Muxer Keepalive Ping");
             lastKeepAlive_ = portable::getMillis();
             timeout = std::min<decltype(timeout)>(timeout, keepAlivePeriod_);
         } else {
@@ -1420,7 +1424,7 @@ inline const char* Muxer<StreamT, MutexT>::Channel::stateName(ChannelState state
 
 template<typename StreamT, typename MutexT>
 inline void Muxer<StreamT, MutexT>::Channel::transition(ChannelState nState) {
-    GSM0710_LOG_DEBUG(TRACE, "Channel %u transitioning from %s to %s",
+    LOG_DEBUG_C(TRACE, "mux", "Channel %u transitioning from %s to %s",
             channel, stateName(state), stateName(nState));
     state = nState;
     if (nState == ChannelState::Closed) {
