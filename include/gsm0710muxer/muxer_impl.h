@@ -838,7 +838,7 @@ inline int Muxer<StreamT, MutexT>::processTimeouts() {
 
 template<typename StreamT, typename MutexT>
 inline int Muxer<StreamT, MutexT>::processChannelData() {
-    std::unique_lock<MutexT> lk(mutex_);
+    portable::unique_lock<MutexT> lk(mutex_);
 
     uint8_t channel = frame_.address >> 2;
     GSM0710_LOG_DEBUG(TRACE, "New frame on channel %u, control = %02x, length = %u, fcs = %02x",
@@ -1215,7 +1215,7 @@ inline int Muxer<StreamT, MutexT>::sendChannel(uint8_t channel, uint8_t control,
 template<typename StreamT, typename MutexT>
 inline int Muxer<StreamT, MutexT>::controlSend(proto::ControlChannelCommand cmd, const uint8_t* data, size_t size) {
     GSM0710_LOG_DEBUG(TRACE, "Sending control command %02x, length = %u", cmd, size);
-    std::unique_lock<MutexT> lk(mutex_);
+    portable::unique_lock<MutexT> lk(mutex_);
 
     ctrl_.state = ControlCommand::State::Pending;
     ctrl_.len = 2 + size;
@@ -1388,7 +1388,7 @@ inline const char* Muxer<StreamT, MutexT>::stateName(State state) {
 
 template<typename StreamT, typename MutexT>
 inline int Muxer<StreamT, MutexT>::setLogCategory(const char* category) {
-    std::unique_lock<MutexT> lk(mutex_);
+    portable::unique_lock<MutexT> lk(mutex_);
     if (category) {
         logCategory_.reset(strdup(category));
         CHECK_TRUE(logCategory_, GSM0710_ERROR_NO_MEMORY);
