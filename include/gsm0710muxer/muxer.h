@@ -34,6 +34,13 @@
 #define GSM0710_EVENT_BASE (0)
 #endif // GSM0710_SHARED_STREAM_EVENT_GROUP
 
+// Max iterations of the in-parse timeout drain loop before yielding back to the
+// main loop. processTimeouts() handles all channels/control in a single pass, so
+// this only needs to be small; it exists to bound a persistently-due timeout.
+#ifndef GSM0710_MAX_TIMEOUT_ITERATIONS
+#define GSM0710_MAX_TIMEOUT_ITERATIONS (4)
+#endif // GSM0710_MAX_TIMEOUT_ITERATIONS
+
 
 namespace gsm0710 {
 

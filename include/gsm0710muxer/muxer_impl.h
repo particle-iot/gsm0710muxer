@@ -477,6 +477,10 @@ inline int Muxer<StreamT, MutexT>::run() {
     GSM0710_LOG(INFO, "GSM07.10 muxer thread started");
     transition(State::Idle);
 
+#ifdef GSM0710_COOP_YIELD_MS
+    uint64_t lastYieldMs = portable::getMillis();
+#endif // GSM0710_COOP_YIELD_MS
+
     while (state_ != State::Stopped && state_ != State::Error) {
         auto nextTimeout = processTimeouts();
         if (nextTimeout < 0) {
@@ -522,6 +526,17 @@ inline int Muxer<StreamT, MutexT>::run() {
                 break;
             }
         }
+
+#ifdef GSM0710_COOP_YIELD_MS
+        // Under a sustained inbound stream the READABLE event returns immediately,
+        // keeping this network-priority thread continuously runnable and starving
+        // lower-priority peers (e.g. USB). Periodically block a tick so they run.
+        if ((ev & EVENT_INPUT_DATA) &&
+                (int64_t)(portable::getMillis() - lastYieldMs) >= GSM0710_COOP_YIELD_MS) {
+            xEventGroupWaitBits(events_, EVENT_STOP, pdFALSE, pdFALSE, 1);
+            lastYieldMs = portable::getMillis();
+        }
+#endif // GSM0710_COOP_YIELD_MS
     }
 
     GSM0710_LOG(INFO, "GSM07.10 muxer thread exiting");
@@ -741,8 +756,12 @@ inline int Muxer<StreamT, MutexT>::processInputData() {
         }
 
         if (state_ == State::Idle) {
-            // There is some critical stuff we might need to do while we are parsing incoming data
-            while (isRunning() && CHECK(processTimeouts()) == 0) {
+            // There is some critical stuff we might need to do while we are parsing incoming data.
+            // Bound the iterations: processTimeouts() handles all channels/control in one pass, and
+            // this runs inside the parse loop (not covered by the run() cooperative yield), so a
+            // persistently-due timeout must not be allowed to spin here.
+            int timeoutGuard = GSM0710_MAX_TIMEOUT_ITERATIONS;
+            while (isRunning() && timeoutGuard-- > 0 && CHECK(processTimeouts()) == 0) {
             }
 #ifdef GSM0710_RELAX_WHEN_CHANNEL_IN_FLOW_CONTROL
             if (channelDataResult == GSM0710_ERROR_FLOW_CONTROL) {
